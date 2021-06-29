@@ -78,7 +78,7 @@ int32_t auth_flag = 0;
 
 char cookie[4096] = "", cmiscptr[1024];
 
-int32_t webport, freemischttpform = 0;
+int32_t webport;
 char bufferurl[6096 + 24], cookieurl[6096 + 24] = "", userheader[6096 + 24] = "", *url, *variables, *optional1;
 
 #define MAX_REDIRECT 8
@@ -400,6 +400,10 @@ int32_t parse_options(char *miscptr, ptr_header_node *ptr_head) {
    * Beware of the backslashes (\)!
    */
   while (*miscptr != 0) {
+    if (strlen(miscptr) < 3 || miscptr[1] != '=') {
+      hydra_report(stderr, "[ERROR] optional parameters must have the format X=value: %s\n", miscptr);
+      return 0;
+    }
     switch (miscptr[0]) {
     case 'a': // fall through
     case 'A': // only for http, not http-form!
@@ -504,7 +508,9 @@ int32_t parse_options(char *miscptr, ptr_header_node *ptr_head) {
       // Error: abort execution
       hydra_report(stderr, "[ERROR] Out of memory for HTTP headers (H).\n");
       return 0;
-      // no default
+    default:
+      hydra_report(stderr, "[ERROR] no valid optional parameter type given: %c\n", miscptr[0]);
+      return 0;
     }
   }
   return 1;
@@ -566,16 +572,18 @@ char *html_encode(char *string) {
   if (ret == NULL)
     return NULL;
 
-  if (index(ret, '%') != NULL)
+  if (strchr(ret, '%') != NULL)
     ret = hydra_strrep(ret, "%", "%25");
-  if (index(ret, ' ') != NULL)
+  if (strchr(ret, ' ') != NULL)
     ret = hydra_strrep(ret, " ", "%20");
-  if (index(ret, '&') != NULL)
+  if (strchr(ret, '&') != NULL)
     ret = hydra_strrep(ret, "&", "%26");
-  if (index(ret, '#') != NULL)
+  if (strchr(ret, '#') != NULL)
     ret = hydra_strrep(ret, "#", "%23");
-  if (index(ret, '=') != NULL)
+  if (strchr(ret, '=') != NULL)
     ret = hydra_strrep(ret, "=", "%3D");
+  if (strchr(ret, '+') != NULL)
+    ret = hydra_strrep(ret, "+", "%2B");
 
   return ret;
 }
@@ -638,10 +646,10 @@ int32_t analyze_server_response(int32_t s) {
         } else if (endcookie2 != NULL)
           *endcookie2 = 0;
         // is the cookie already there? if yes, remove it!
-        if (index(startcookie, '=') != NULL && (ptr = index(startcookie, '=')) - startcookie + 1 <= sizeof(tmpname)) {
+        if (strchr(startcookie, '=') != NULL && (ptr = strchr(startcookie, '=')) - startcookie + 1 <= sizeof(tmpname)) {
           strncpy(tmpname, startcookie, sizeof(tmpname) - 2);
           tmpname[sizeof(tmpname) - 2] = 0;
-          ptr = index(tmpname, '=');
+          ptr = strchr(tmpname, '=');
           *(++ptr) = 0;
           // is the cookie already in the cookiejar? (so, does it have to be
           // replaced?)
@@ -667,7 +675,7 @@ int32_t analyze_server_response(int32_t s) {
             strcpy(cookie, tmpcookie);
           }
         }
-        ptr = index(str, '=');
+        ptr = strchr(str, '=');
         // only copy the cookie if it has a value (otherwise the server wants to
         // delete the cookie)
         if (ptr != NULL && *(ptr + 1) != ';' && *(ptr + 1) != 0 && *(ptr + 1) != '\n' && *(ptr + 1) != '\r') {
@@ -1031,7 +1039,7 @@ int32_t start_http_form(int32_t s, char *ip, int32_t port, unsigned char options
       }
 
       if (strrchr(url, ':') == NULL && port != 80) {
-        sprintf(str2, "%s:%d", str2, port);
+        sprintf(str2, "%.2040s:%d", str2, port);
       }
 
       if (verbose)
@@ -1125,9 +1133,6 @@ void service_http_form(char *ip, int32_t sp, unsigned char options, char *miscpt
   while (1) {
     if (run == 2) {
       if (memcmp(hydra_get_next_pair(), &HYDRA_EXIT, sizeof(HYDRA_EXIT)) == 0) {
-        if (freemischttpform)
-          free(miscptr);
-        freemischttpform = 0;
         hydra_child_exit(1);
       }
     }
@@ -1149,9 +1154,6 @@ void service_http_form(char *ip, int32_t sp, unsigned char options, char *miscpt
       }
       if (sock < 0) {
         hydra_report(stderr, "[ERROR] Child with pid %d terminating, cannot connect\n", (int32_t)getpid());
-        if (freemischttpform)
-          free(miscptr);
-        freemischttpform = 0;
         hydra_child_exit(1);
       }
       next_run = 2;
@@ -1163,30 +1165,19 @@ void service_http_form(char *ip, int32_t sp, unsigned char options, char *miscpt
     case 3: /* clean exit */
       if (sock >= 0)
         sock = hydra_disconnect(sock);
-      if (freemischttpform)
-        free(miscptr);
-      freemischttpform = 0;
       hydra_child_exit(0);
       break;
     case 4: /* silent error exit */
       if (sock >= 0)
         sock = hydra_disconnect(sock);
-      if (freemischttpform)
-        free(miscptr);
-      freemischttpform = 0;
       hydra_child_exit(1);
       break;
     default:
-      if (freemischttpform)
-        free(miscptr);
-      freemischttpform = 0;
       hydra_report(stderr, "[ERROR] Caught unknown return code, exiting!\n");
       hydra_child_exit(0);
     }
     run = next_run;
   }
-  if (freemischttpform)
-    free(miscptr);
 }
 
 void service_http_get_form(char *ip, int32_t sp, unsigned char options, char *miscptr, FILE *fp, int32_t port, char *hostname) {
@@ -1197,7 +1188,7 @@ void service_http_get_form(char *ip, int32_t sp, unsigned char options, char *mi
     service_http_form(ip, sp, options, miscptr, fp, port, hostname, "GET", &ptr_head, &ptr_cookie);
   else {
     hydra_report(stderr, "[ERROR] Could not launch head. Error while initializing.\n");
-    hydra_child_exit(1);
+    hydra_child_exit(2);
   }
 }
 
@@ -1209,7 +1200,7 @@ void service_http_post_form(char *ip, int32_t sp, unsigned char options, char *m
     service_http_form(ip, sp, options, miscptr, fp, port, hostname, "POST", &ptr_head, &ptr_cookie);
   else {
     hydra_report(stderr, "[ERROR] Could not launch head. Error while initializing.\n");
-    hydra_child_exit(1);
+    hydra_child_exit(2);
   }
 }
 
@@ -1224,41 +1215,30 @@ int32_t service_http_form_init(char *ip, int32_t sp, unsigned char options, char
   //   0 all OK
   //   -1  error, hydra will exit, so print a good error message here
 
+  if (initialize(ip, options, miscptr) == NULL)
+    return 1;
+
   return 0;
 }
 
 ptr_header_node initialize(char *ip, unsigned char options, char *miscptr) {
   ptr_header_node ptr_head = NULL;
   char *ptr, *ptr2, *proxy_string;
+#ifdef AF_INET6
+  unsigned char addr6[sizeof(struct in6_addr)];
+#endif
 
   if (use_proxy > 0 && proxy_count > 0)
     selected_proxy = random() % proxy_count;
 
-  if (webtarget != NULL && (webtarget = strstr(miscptr, "://")) != NULL) {
-    webtarget += strlen("://");
-    if ((ptr2 = index(webtarget, ':')) != NULL) { /* step over port if present */
-      *ptr2 = 0;
-      ptr2++;
-      ptr = ptr2;
-      if (*ptr == '/' || (ptr = index(ptr2, '/')) != NULL)
-        miscptr = ptr;
-      else
-        miscptr = slash; /* to make things easier to user */
-    } else if ((ptr2 = index(webtarget, '/')) != NULL) {
-      if (freemischttpform == 0) {
-        if ((miscptr = malloc(strlen(ptr2) + 1)) != NULL) {
-          freemischttpform = 1;
-          strcpy(miscptr, ptr2);
-          *ptr2 = 0;
-        }
-      }
-    } else
-      webtarget = NULL;
+  if (webtarget) {
+    free(webtarget);
+    webtarget = NULL;
   }
 
-  if (cmdlinetarget != NULL && webtarget == NULL)
+  if (cmdlinetarget != NULL)
     webtarget = cmdlinetarget;
-  else if (webtarget == NULL && cmdlinetarget == NULL)
+  else
     webtarget = hydra_address2string(ip);
   if (port != 0)
     webport = port;
@@ -1266,6 +1246,28 @@ ptr_header_node initialize(char *ip, unsigned char options, char *miscptr) {
     webport = PORT_HTTP;
   else
     webport = PORT_HTTP_SSL;
+
+  /* normalise the webtarget for ipv6/port number */
+  ptr = malloc(strlen(webtarget) + 1 /* null */ + 6 /* :65535  */
+#ifdef AF_INET6
+               + 2 /* [] */
+#endif
+  );
+#ifdef AF_INET6
+  /* let libc decide if target is an ipv6 address */
+  if (inet_pton(AF_INET6, webtarget, addr6)) {
+    ptr2 = ptr + sprintf(ptr, "[%s]", webtarget);
+  } else {
+#endif
+    ptr2 = ptr + sprintf(ptr, "%s", webtarget);
+#ifdef AF_INET6
+  }
+#endif
+  if (options & OPTION_SSL && webport != PORT_HTTP_SSL || !(options & OPTION_SSL) && webport != PORT_HTTP) {
+    sprintf(ptr2, ":%d", webport);
+  }
+  webtarget = ptr;
+  ptr = ptr2 = NULL;
 
   sprintf(bufferurl, "%.6096s", miscptr);
   url = bufferurl;
@@ -1282,21 +1284,16 @@ ptr_header_node initialize(char *ip, unsigned char options, char *miscptr) {
   if (*ptr != 0)
     *ptr++ = 0;
 
-  if ((ptr2 = rindex(ptr, ':')) != NULL) {
-    cond = ptr2 + 1;
-    *ptr2 = 0;
+  cond = ptr;
+
+  if ((ptr2 = strchr(ptr, ':')) != NULL) {
+    *ptr2++ = 0;
+    if (*ptr2)
+      optional1 = ptr2;
+    else
+      optional1 = NULL;
   } else
-    cond = ptr;
-  /*
-    while (*ptr != 0 && (*ptr != ':' || *(ptr - 1) == '\\'))
-      ptr++;
-    if (*ptr != 0)
-      *ptr++ = 0;
-  */
-  if (ptr == cond)
     optional1 = NULL;
-  else
-    optional1 = ptr;
 
   if (strstr(url, "\\:") != NULL) {
     if ((ptr = malloc(strlen(url))) != NULL) {
@@ -1332,7 +1329,7 @@ ptr_header_node initialize(char *ip, unsigned char options, char *miscptr) {
   sprintf(cookieurl, "%.1000s", url);
 
   // conditions now have to contain F or S to set the fail or success condition
-  if (*cond != 0 && (strpos(cond, "F=") == 0)) {
+  if (strpos(cond, "F=") == 0) {
     success_cond = 0;
     cond += 2;
   } else if (*cond != 0 && (strpos(cond, "S=") == 0)) {
@@ -1407,6 +1404,7 @@ ptr_header_node initialize(char *ip, unsigned char options, char *miscptr) {
       normal_request = stringify_headers(&ptr_head);
     }
   }
+
   return ptr_head;
 }
 

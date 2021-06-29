@@ -1,5 +1,5 @@
 /*
- * hydra (c) 2001-2020 by van Hauser / THC <vh@thc.org>
+ * hydra (c) 2001-2021 by van Hauser / THC <vh@thc.org>
  * https://github.com/vanhauser-thc/thc-hydra
  *
  * Parallized network login hacker.
@@ -11,6 +11,7 @@
  */
 #include "hydra.h"
 #include "bfg.h"
+#include <strings.h>
 
 #ifdef LIBNCURSES
 #include <curses.h>
@@ -117,7 +118,7 @@ extern int32_t service_oracle_sid_init(char *ip, int32_t sp, unsigned char optio
 extern void service_sip(char *ip, int32_t sp, unsigned char options, char *miscptr, FILE *fp, int32_t port, char *hostname);
 extern int32_t service_sip_init(char *ip, int32_t sp, unsigned char options, char *miscptr, FILE *fp, int32_t port, char *hostname);
 #endif
-#ifdef LIBFREERDP2
+#ifdef LIBFREERDP
 extern void service_rdp(char *ip, int32_t sp, unsigned char options, char *miscptr, FILE *fp, int32_t port, char *hostname);
 extern int32_t service_rdp_init(char *ip, int32_t sp, unsigned char options, char *miscptr, FILE *fp, int32_t port, char *hostname);
 #endif
@@ -225,7 +226,7 @@ char *SERVICES = "adam6500 asterisk afp cisco cisco-enable cvs firebird ftp[s] "
 #define RESTOREFILE "./hydra.restore"
 
 #define PROGRAM "Hydra"
-#define VERSION "v9.1-dev"
+#define VERSION "v9.3-dev"
 #define AUTHOR "van Hauser/THC"
 #define EMAIL "<vh@thc.org>"
 #define AUTHOR2 "David Maciejak"
@@ -426,7 +427,7 @@ static const struct {
 #endif
                 SERVICE(redis),
                 SERVICE(rexec),
-#ifdef LIBFREERDP2
+#ifdef LIBFREERDP
                 SERVICE3("rdp", rdp),
 #endif
                 SERVICE(rlogin),
@@ -505,7 +506,7 @@ void help(int32_t ext) {
                "  -x MIN:MAX:CHARSET  password bruteforce generation, type "
                "\"-x -h\" to get help\n"
                "  -y        disable use of symbols in bruteforce, see above\n"
-               "  -r		 rainy mode for password generation (-x)\n"
+               "  -r        use a non-random shuffling method for option -x\n"
 #endif
                "  -e nsr    try \"n\" null password, \"s\" login as pass "
                "and/or \"r\" reversed login\n"
@@ -591,7 +592,9 @@ void help_bfg() {
          "             'A' for uppercase letters, '1' for numbers, and for all "
          "others,\n"
          "             just add their real representation.\n"
-         "  -y         disable the use of the above letters as placeholders\n\n"
+         "  -y         disable the use of the above letters as placeholders\n"
+         "  -r         use a shuffling method called 'rain' to try to break\n"
+         "             the linearity of the bruteforce\n"
          "Examples:\n"
          "   -x 3:5:a  generate passwords from length 3 to 5 with all "
          "lowercase letters\n"
@@ -610,15 +613,13 @@ void help_bfg() {
 
 void module_usage() {
   int32_t i;
-  if (!hydra_options.service) {
-    printf("The Module %s does not need or support optional parameters\n", hydra_options.service);
-    exit(0);
-  }
 
   printf("\nHelp for module "
          "%s:\n================================================================"
          "============\n",
          hydra_options.service);
+  if (strncmp(hydra_options.service, "https-", 6) == 0)
+    memmove(hydra_options.service + 4, hydra_options.service + 5, strlen(hydra_options.service) - 4);
   for (i = 0; i < sizeof(services) / sizeof(services[0]); i++) {
     if (strcmp(hydra_options.service, services[i].name) == 0) {
       if (services[i].usage) {
@@ -806,7 +807,7 @@ void hydra_restore_read() {
     fprintf(stderr,
             "[WARNING] restore file was created by version %c.%c, this is "
             "version %s\n",
-            buf[0], buf[2], VERSION);
+            buf[0], buf[1], VERSION);
   if (buf[2] != sizeof(int32_t) % 256 || buf[3] != sizeof(hydra_head *) % 256) {
     fprintf(stderr, "[ERROR] restore file was created on a different, "
                     "incompatible processor platform!\n");
@@ -882,11 +883,19 @@ void hydra_restore_read() {
     printf("[DEBUG] reading restore file: Step 8 complete\n");
 
   login_ptr = malloc(hydra_brains.sizelogin + hydra_brains.countlogin + 8);
+  if (!login_ptr) {
+    fprintf(stderr, "Error: malloc(%lu) failed\n", hydra_brains.sizelogin + hydra_brains.countlogin + 8);
+    exit(-1);
+  }
   fck = (int32_t)fread(login_ptr, hydra_brains.sizelogin + hydra_brains.countlogin + 8, 1, f);
   if (debug)
     printf("[DEBUG] reading restore file: Step 9 complete\n");
   if (!check_flag(hydra_options.mode, MODE_COLON_FILE)) { // NOT colonfile mode
     pass_ptr = malloc(hydra_brains.sizepass + hydra_brains.countpass + 8);
+    if (!pass_ptr) {
+      fprintf(stderr, "Error: malloc(%lu) failed\n", hydra_brains.sizepass + hydra_brains.countpass + 8);
+      exit(-1);
+    }
     fck = (int32_t)fread(pass_ptr, hydra_brains.sizepass + hydra_brains.countpass + 8, 1, f);
   } else {                                 // colonfile mode
     hydra_options.colonfile = empty_login; // dummy
@@ -896,8 +905,16 @@ void hydra_restore_read() {
     printf("[DEBUG] reading restore file: Step 10 complete\n");
 
   hydra_targets = (hydra_target **)malloc((hydra_brains.targets + 3) * sizeof(hydra_target *));
+  if (!hydra_targets) {
+    fprintf(stderr, "Error: malloc(%lu) failed\n", (hydra_brains.targets + 3) * sizeof(hydra_target *));
+    exit(-1);
+  }
   for (j = 0; j < hydra_brains.targets; j++) {
     hydra_targets[j] = malloc(sizeof(hydra_target));
+    if (!hydra_targets[j]) {
+      fprintf(stderr, "Error: malloc(%lu) failed\n", sizeof(hydra_target));
+      exit(-1);
+    }
     fck = (int32_t)fread(hydra_targets[j], sizeof(hydra_target), 1, f);
     sck = fgets(out, sizeof(out), f);
     if (out[0] != 0 && out[strlen(out) - 1] == '\n')
@@ -949,8 +966,16 @@ void hydra_restore_read() {
   if (debug)
     printf("[DEBUG] reading restore file: Step 11 complete\n");
   hydra_heads = malloc(sizeof(hydra_head *) * hydra_options.max_use);
+  if (!hydra_heads) {
+    fprintf(stderr, "Error: malloc(%lu) failed\n", sizeof(hydra_head *) * hydra_options.max_use);
+    exit(-1);
+  }
   for (j = 0; j < hydra_options.max_use; j++) {
     hydra_heads[j] = malloc(sizeof(hydra_head));
+    if (!hydra_heads[j]) {
+      fprintf(stderr, "Error: malloc(%lu) failed\n", sizeof(hydra_head));
+      exit(-1);
+    }
     fck = (int32_t)fread(hydra_heads[j], sizeof(hydra_head), 1, f);
     hydra_heads[j]->sp[0] = -1;
     hydra_heads[j]->sp[1] = -1;
@@ -1106,7 +1131,7 @@ void fill_mem(char *ptr, FILE *fd, int32_t colonmode) {
             tmp[len] = 0;
           }
           if (colonmode) {
-            if ((ptr2 = index(tmp, ':')) == NULL) {
+            if ((ptr2 = strchr(tmp, ':')) == NULL) {
               fprintf(stderr,
                       "[ERROR] invalid line in colon file (-C), missing colon "
                       "in line: %s\n",
@@ -1469,7 +1494,7 @@ void hydra_increase_fail_count(int32_t target_no, int32_t head_no) {
           fprintf(stderr,
                   "[ERROR] Too many connect errors to target, disabling "
                   "%s://%s%s%s:%d\n",
-                  hydra_options.service, hydra_targets[target_no]->ip[0] == 16 && index(hydra_targets[target_no]->target, ':') != NULL ? "[" : "", hydra_targets[target_no]->target, hydra_targets[target_no]->ip[0] == 16 && index(hydra_targets[target_no]->target, ':') != NULL ? "]" : "", hydra_targets[target_no]->port);
+                  hydra_options.service, hydra_targets[target_no]->ip[0] == 16 && strchr(hydra_targets[target_no]->target, ':') != NULL ? "[" : "", hydra_targets[target_no]->target, hydra_targets[target_no]->ip[0] == 16 && strchr(hydra_targets[target_no]->target, ':') != NULL ? "]" : "", hydra_targets[target_no]->port);
         }
         if (hydra_brains.targets > hydra_brains.finished)
           hydra_kill_head(head_no, 1, 0);
@@ -1779,7 +1804,7 @@ int32_t hydra_send_next_pair(int32_t target_no, int32_t head_no) {
 #ifndef HAVE_MATH_H
                   sleep(1);
 #else
-                  hydra_targets[target_no]->pass_ptr = bf_next(hydra_options.rainy);
+                  hydra_targets[target_no]->pass_ptr = bf_next();
                   if (debug)
                     printf("[DEBUG] bfg new password for next child: %s\n", hydra_targets[target_no]->pass_ptr);
 #endif
@@ -1932,7 +1957,7 @@ void hydra_skip_user(int32_t target_no, char *username) {
     hydra_targets[target_no]->skipcnt++;
   }
   if (hydra_options.loop_mode == 0 && !check_flag(hydra_options.mode, MODE_COLON_FILE)) {
-    if (memcmp(username, hydra_targets[target_no]->login_ptr, strlen(username)) == 0) {
+    if (strcmp(username, hydra_targets[target_no]->login_ptr) == 0) {
       if (debug)
         printf("[DEBUG] skipping username %s\n", username);
       // increase count
@@ -2022,11 +2047,11 @@ void process_proxy_line(int32_t type, char *string) {
   }
   *sep = 0;
   target_string = sep + 3;
-  if ((sep = index(target_string, '@')) != NULL) {
+  if ((sep = strchr(target_string, '@')) != NULL) {
     auth_string = target_string;
     *sep = 0;
     target_string = sep + 1;
-    if (index(auth_string, ':') == NULL) {
+    if (strchr(auth_string, ':') == NULL) {
       fprintf(stderr,
               "[WARNING] %s has an invalid authentication definition %s, must "
               "be in the format login:pass, entry ignored\n",
@@ -2034,14 +2059,14 @@ void process_proxy_line(int32_t type, char *string) {
       return;
     }
   }
-  if ((sep = index(target_string, ':')) != NULL) {
+  if ((sep = strchr(target_string, ':')) != NULL) {
     *sep = 0;
     port_string = sep + 1;
-    if ((sep = index(port_string, '%')) != NULL) {
+    if ((sep = strchr(port_string, '%')) != NULL) {
       *sep = 0;
       device_string = sep + 1;
     }
-    if ((sep = index(port_string, '/')) != NULL)
+    if ((sep = strchr(port_string, '/')) != NULL)
       *sep = 0;
     port = atoi(port_string);
     if (port < 1 || port > 65535) {
@@ -2151,7 +2176,7 @@ int main(int argc, char *argv[]) {
   struct sockaddr_in6 *ipv6 = NULL;
   struct sockaddr_in *ipv4 = NULL;
 
-  printf("%s %s (c) 2020 by %s & %s - Please do not use in military or secret "
+  printf("%s %s (c) 2021 by %s & %s - Please do not use in military or secret "
          "service organizations, or for illegal purposes (this is non-binding, these *** ignore laws and ethics anyway).\n\n",
          PROGRAM, VERSION, AUTHOR, AUTHOR2);
 #ifndef LIBAFP
@@ -2237,7 +2262,7 @@ int main(int argc, char *argv[]) {
   strcat(unsupported, "SSL-services (ftps, sip, rdp, oracle-services, ...) ");
 #endif
 
-#ifndef LIBFREERDP2
+#ifndef LIBFREERDP
   // for rdp
   SERVICES = hydra_string_replace(SERVICES, " rdp", "");
 #endif
@@ -2279,7 +2304,6 @@ int main(int argc, char *argv[]) {
   hydra_brains.ofp = stdout;
   hydra_brains.targets = 1;
   hydra_options.waittime = waittime = WAITTIME;
-  hydra_options.rainy = 0;
   bf_options.disable_symbols = 0;
 
   // command line processing
@@ -2315,7 +2339,7 @@ int main(int argc, char *argv[]) {
       hydra_restore_read();
       break;
     case 'r':
-      hydra_options.rainy = 1;
+      fprintf(stderr, "Warning: the option -r has been removed.\n");
       break;
     case 'I':
       ignore_restore = 1; // this is not to be saved in hydra_options!
@@ -2571,23 +2595,23 @@ int main(int argc, char *argv[]) {
 
         if (*target_pos == '[') {
           target_pos++;
-          if ((param_pos = index(target_pos, ']')) == NULL)
+          if ((param_pos = strchr(target_pos, ']')) == NULL)
             bail("no closing ']' found in target definition");
           *param_pos++ = 0;
           if (*param_pos == ':')
             port_pos = ++param_pos;
-          if ((param_pos = index(param_pos, '/')) != NULL)
+          if ((param_pos = strchr(param_pos, '/')) != NULL)
             *param_pos++ = 0;
         } else {
-          port_pos = index(target_pos, ':');
-          param_pos = index(target_pos, '/');
+          port_pos = strchr(target_pos, ':');
+          param_pos = strchr(target_pos, '/');
           if (port_pos != NULL && param_pos != NULL && port_pos > param_pos)
             port_pos = NULL;
           if (port_pos != NULL)
             *port_pos++ = 0;
           if (param_pos != NULL)
             *param_pos++ = 0;
-          if (port_pos != NULL && index(port_pos, ':') != NULL) {
+          if (port_pos != NULL && strchr(port_pos, ':') != NULL) {
             if (prefer_ipv6)
               bail("Illegal IPv6 target definition must be written within '[' "
                    "']'");
@@ -2870,7 +2894,7 @@ int main(int argc, char *argv[]) {
                         "like parallel connections)\n");
         hydra_options.tasks = 1;
       }
-      if (hydra_options.login != NULL && (index(hydra_options.login, '\\') != NULL || index(hydra_options.login, '/') != NULL))
+      if (hydra_options.login != NULL && (strchr(hydra_options.login, '\\') != NULL || strchr(hydra_options.login, '/') != NULL))
         fprintf(stderr, "[WARNING] potential windows domain specification found in "
                         "login. You must use the -m option to pass a domain.\n");
       i = 1;
@@ -2894,7 +2918,7 @@ int main(int argc, char *argv[]) {
 #if !defined(LIBSMBCLIENT)
       bail("Compiled without LIBSMBCLIENT support, module not available!");
 #else
-      if (hydra_options.login != NULL && (index(hydra_options.login, '\\') != NULL || index(hydra_options.login, '/') != NULL))
+      if (hydra_options.login != NULL && (strchr(hydra_options.login, '\\') != NULL || strchr(hydra_options.login, '/') != NULL))
         fprintf(stderr, "[WARNING] potential windows domain specification found in "
                         "login. You must use the -m option to pass a domain.\n");
       if (hydra_options.miscptr == NULL || (strlen(hydra_options.miscptr) == 0)) {
@@ -2905,8 +2929,8 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(hydra_options.service, "rdp") == 0) {
-#ifndef LIBFREERDP2
-      bail("Compiled without FREERDP2 support, module not available!");
+#ifndef LIBFREERDP
+      bail("Compiled without FREERDP support, modules not available!");
 #endif
     }
     if (strcmp(hydra_options.service, "pcnfs") == 0) {
@@ -3185,7 +3209,6 @@ int main(int argc, char *argv[]) {
         printf("[INFO] Using HTTP Proxy: %s\n", getenv("HYDRA_PROXY_HTTP"));
         use_proxy = 1;
       }
-
       if (strstr(hydra_options.miscptr, "\\:") != NULL) {
         fprintf(stderr, "[INFORMATION] escape sequence \\: detected in module "
                         "option, no parameter verification is performed.\n");
@@ -3214,6 +3237,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[ERROR] Wrong syntax of optional argument: %s\n", optional1);
             exit(-1);
           }
+
           switch (optional1[0]) {
           case 'C': // fall through
           case 'c':
@@ -3285,6 +3309,9 @@ int main(int argc, char *argv[]) {
       }
       hydra_options.port = port;
     }
+
+    if (hydra_options.login == NULL && hydra_options.loginfile == NULL)
+      hydra_options.exit_found = 1;
 
     if (hydra_options.ssl == 0 && hydra_options.port == 443)
       fprintf(stderr, "[WARNING] you specified port 443 for attacking a http "
@@ -3431,7 +3458,8 @@ int main(int argc, char *argv[]) {
 #ifdef HAVE_MATH_H
             if (bf_init(bf_options.arg))
               exit(-1); // error description is handled by bf_init
-            pass_ptr = bf_next(hydra_options.rainy);
+
+            pass_ptr = bf_next();
             hydra_brains.countpass += bf_get_pcount();
             hydra_brains.sizepass += BF_BUFLEN;
 #else
@@ -3546,13 +3574,13 @@ int main(int argc, char *argv[]) {
         if (*tmpptr == '[') {
           tmpptr++;
           hydra_targets[i]->target = tmpptr;
-          if ((tmpptr2 = index(tmpptr, ']')) != NULL) {
+          if ((tmpptr2 = strchr(tmpptr, ']')) != NULL) {
             *tmpptr2++ = 0;
             tmpptr = tmpptr2;
           }
         } else
           hydra_targets[i]->target = tmpptr;
-        if ((tmpptr2 = index(hydra_targets[i]->target, ':')) != NULL) {
+        if ((tmpptr2 = strchr(hydra_targets[i]->target, ':')) != NULL) {
           *tmpptr2++ = 0;
           tmpptr = tmpptr2;
           hydra_targets[i]->port = atoi(tmpptr2);
@@ -3568,13 +3596,13 @@ int main(int argc, char *argv[]) {
     } else if (hydra_options.server == NULL) {
       fprintf(stderr, "Error: no target server given, nor -M option used\n");
       exit(-1);
-    } else if (index(hydra_options.server, '/') != NULL) {
+    } else if (strchr(hydra_options.server, '/') != NULL) {
       if (cmdlinetarget == NULL)
         bail("You seem to mix up \"service://target:port/options\" syntax with "
              "\"target service options\" syntax. Read the README on how to use "
              "hydra correctly!");
       if (strstr(cmdlinetarget, "://") != NULL) {
-        tmpptr = index(hydra_options.server, '/');
+        tmpptr = strchr(hydra_options.server, '/');
         if (tmpptr != NULL)
           *tmpptr = 0;
         countservers = hydra_brains.targets = 1;
@@ -3597,7 +3625,7 @@ int main(int argc, char *argv[]) {
           exit(-1);
         }
         strcpy(tmpptr, hydra_options.server);
-        tmpptr2 = index(tmpptr, '/');
+        tmpptr2 = strchr(tmpptr, '/');
         *tmpptr2++ = 0;
         if ((k = atoi(tmpptr2)) < 16 || k > 31) {
           fprintf(stderr, "Error: network size may only be between /16 and /31: %s\n", hydra_options.server);
@@ -3763,7 +3791,7 @@ int main(int argc, char *argv[]) {
   printf(" per task\n");
 
   if (hydra_brains.targets == 1) {
-    if (index(hydra_targets[0]->target, ':') == NULL) {
+    if (strchr(hydra_targets[0]->target, ':') == NULL) {
       printf("[DATA] attacking %s%s://%s:", hydra_options.service, hydra_options.ssl == 1 ? "s" : "", hydra_targets[0]->target);
       printf("%d%s%s\n", port, hydra_options.miscptr == NULL || hydra_options.miscptr[0] != '/' ? "/" : "", hydra_options.miscptr != NULL ? hydra_options.miscptr : "");
     } else {
@@ -3839,7 +3867,7 @@ int main(int argc, char *argv[]) {
 #ifdef AF_INET6
     ipv6 = NULL;
 #endif
-    if ((device = index(hydra_targets[i]->target, '%')) != NULL)
+    if ((device = strchr(hydra_targets[i]->target, '%')) != NULL)
       *device++ = 0;
     if (getaddrinfo(hydra_targets[i]->target, NULL, &hints, &res) != 0) {
       if (use_proxy == 0) {

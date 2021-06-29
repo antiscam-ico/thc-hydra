@@ -3,14 +3,16 @@
 #
 WARN_CLANG=-Wformat-nonliteral -Wstrncat-size -Wformat-security -Wsign-conversion -Wconversion -Wfloat-conversion -Wshorten-64-to-32 -Wuninitialized -Wmissing-variable-declarations  -Wmissing-declarations
 WARN_GCC=-Wformat=2 -Wformat-overflow=2 -Wformat-nonliteral -Wformat-truncation=2 -Wnull-dereference -Wstrict-overflow=2 -Wstringop-overflow=4 -Walloca-larger-than=4096 -Wtype-limits -Wconversion -Wtrampolines -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -fno-common -Wcast-align
-CFLAGS ?= -march=native -flto
-OPTS=-I. -O3 $(CFLAGS) -fcommon
+CFLAGS ?= -g
+OPTS=-I. -O3 $(CFLAGS) -fcommon -Wl,--allow-multiple-definition
 # -Wall -g -pedantic
 LIBS=-lm
 DESTDIR ?=
 BINDIR = /bin
 MANDIR = /man/man1/
 DATADIR = /etc
+PIXDIR = /share/pixmaps
+APPDIR = /share/applications
 
 SRC = hydra-vnc.c hydra-pcnfs.c hydra-rexec.c hydra-nntp.c hydra-socks5.c \
       hydra-telnet.c hydra-cisco.c hydra-http.c hydra-ftp.c hydra-imap.c \
@@ -78,6 +80,10 @@ install:	strip
 	-cp -f *.csv $(DESTDIR)$(PREFIX)$(DATADIR)
 	-mkdir -p $(DESTDIR)$(PREFIX)$(MANDIR)
 	-cp -f hydra.1 xhydra.1 pw-inspector.1 $(DESTDIR)$(PREFIX)$(MANDIR)
+	-mkdir -p $(DESTDIR)$(PREFIX)$(PIXDIR)
+	-cp -f xhydra.png $(DESTDIR)$(PREFIX)$(PIXDIR)/
+	-mkdir -p $(DESTDIR)$(PREFIX)$(APPDIR)
+	-desktop-file-install --dir $(DESTDIR)$(PREFIX)$(APPDIR) xhydra.desktop
 
 clean:
 	rm -rf xhydra pw-inspector hydra *.o core *.core *.stackdump *~ Makefile.in Makefile dev_rfc hydra.restore arm/*.ipk arm/ipkg/usr/bin/* hydra-gtk/src/*.o hydra-gtk/src/xhydra hydra-gtk/stamp-h hydra-gtk/config.status hydra-gtk/errors hydra-gtk/config.log hydra-gtk/src/.deps hydra-gtk/src/Makefile hydra-gtk/Makefile

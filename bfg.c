@@ -1,6 +1,5 @@
 
-/* code original by Jan Dlabal <dlabaljan@gmail.com>, partially rewritten by vh
- */
+/* code original by Jan Dlabal <dlabaljan@gmail.com>, partially rewritten by vh. */
 
 #include <ctype.h>
 #include <math.h>
@@ -59,7 +58,6 @@ static int32_t add_single_char(char ch, char flags, int32_t *crs_len) {
 // note that we check for -x .:.:ab but not for -x .:.:ba
 //
 int32_t bf_init(char *arg) {
-  bf_options.rain = 0;
   int32_t i = 0;
   int32_t crs_len = 0;
   char flags = 0;
@@ -175,7 +173,9 @@ int32_t bf_init(char *arg) {
 
   bf_options.crs_len = crs_len;
   bf_options.current = bf_options.from;
+
   memset((char *)bf_options.state, 0, sizeof(bf_options.state));
+
   if (debug)
     printf("[DEBUG] bfg INIT: from %u, to %u, len: %u, set: %s\n", bf_options.from, bf_options.to, bf_options.crs_len, bf_options.crs);
 
@@ -199,15 +199,7 @@ uint64_t bf_get_pcount() {
   return foo;
 }
 
-int accu(int value) {
-  int i = 0, a;
-  for (a = 1; a <= value; ++a) {
-    i += a;
-  }
-  return i;
-}
-
-char *bf_next(_Bool rainy) {
+char *bf_next() {
   int32_t i, pos = bf_options.current - 1;
 
   if (bf_options.current > bf_options.to)
@@ -218,20 +210,9 @@ char *bf_next(_Bool rainy) {
     return NULL;
   }
 
-  if (rainy) {
-    for (i = 0; i < bf_options.current; i++) {
-      bf_options.ptr[i] = bf_options.crs[(bf_options.state[i] + bf_options.rain) % bf_options.crs_len];
-      bf_options.rain += i + 1;
-    }
-    if (bf_options.crs_len % 10 == 0)
-      bf_options.rain -= accu(bf_options.current) - 2;
-    else if (bf_options.crs_len % 2 == 0)
-      bf_options.rain -= accu(bf_options.current) - 4;
-    else if (bf_options.crs_len % 2)
-      bf_options.rain -= accu(bf_options.current) - 1;
-  } else
-    for (i = 0; i < bf_options.current; i++)
-      bf_options.ptr[i] = bf_options.crs[bf_options.state[i]];
+  for (i = 0; i < bf_options.current; ++i)
+    bf_options.ptr[i] = bf_options.crs[bf_options.state[i]];
+  // we don't subtract the same depending on wether the length is odd or even
   bf_options.ptr[bf_options.current] = 0;
 
   if (debug) {
@@ -241,12 +222,13 @@ char *bf_next(_Bool rainy) {
     printf(", x: %s\n", bf_options.ptr);
   }
 
+  // we revert the ordering of the bruteforce to fix the first static character
   while (pos >= 0 && (++bf_options.state[pos]) >= bf_options.crs_len) {
     bf_options.state[pos] = 0;
     pos--;
   }
 
-  if (pos < 0) {
+  if (pos < 0 || pos >= bf_options.current) {
     bf_options.current++;
     memset((char *)bf_options.state, 0, sizeof(bf_options.state));
   }
